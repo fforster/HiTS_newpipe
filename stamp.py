@@ -1,9 +1,11 @@
 from __future__ import print_function
 from __future__ import division
 
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage.interpolation import affine_transform
+from scipy import linalg as scipylinalg
 
 from kernel import *
 
@@ -215,9 +217,27 @@ class stamppairlist(object):
         stamppair.kerneltrain = True
         self.pairs.append(stamppair)
 
-    # check optimal photometry as a check for psf building
-    def computepsf(self):
+    # compute psfs checking optimal photometry to select stars
+    def computepsf(self, **kwargs):
 
+        # plot flux ratios
+        if "plotfluxratio" in kwargs.keys():
+            doplotfluxratio = kwargs["plotfluxratio"]
+        else:
+            doplotfluxratio = False
+
+        # plot selected stamps
+        if "plotallstamps" in kwargs.keys():
+            doplotallstamps = kwargs["plotallstamps"]
+        else:
+            doplotallstamps = False
+
+        # plot final psf model
+        if "plotpsfs" in kwargs.keys():
+            doplotpsfs = kwargs["plotpsfs"]
+        else:
+            doplotpsfs = False
+            
         # get first estimate of psf
         psftryref = np.array(map(lambda pair: pair.stampref.flux, self.pairs))
         psftryproj = np.array(map(lambda pair: pair.stampproj.flux, self.pairs))
@@ -238,15 +258,16 @@ class stamppairlist(object):
             zcomp = np.array(map(lambda pair: pair.stampref.z, self.pairs))
 
         # mask galaxies
-        maskflux = np.array(optflux / zcomp > 1, dtype = bool)
+        maskflux = np.array(optflux / zcomp > 0.95, dtype = bool)
         
         # plot flux comparison
-        plotfluxratio = False
-        if plotfluxratio:
+        if doplotfluxratio:
             fig, ax = plt.subplots(ncols = 2)
-            ax[0].scatter(optflux[maskflux], zcomp[maskflux], lw = 0, c = 'r')
-            ax[0].scatter(optflux[maskflux], zcomp[maskflux], lw = 0, c = 'b')
-            ax[1].scatter(optflux, optflux / zcomp, lw = 0)
+            ax[0].scatter(optflux, zcomp, lw = 0, c = 'r')
+            ax[1].scatter(optflux, optflux / zcomp, lw = 0, c = 'r')
+            if np.sum(maskflux) > 0:
+                ax[0].scatter(optflux[maskflux], zcomp[maskflux], lw = 0, c = 'g')
+                ax[1].scatter(optflux[maskflux], optflux[maskflux] / zcomp[maskflux], lw = 0, c = 'g')
             ax[1].axhline(1.)
             ax[0].set_xscale('log')
             ax[0].set_yscale('log')
@@ -254,8 +275,7 @@ class stamppairlist(object):
             plt.show()
 
         # plot all stamps
-        plotallstamps = False
-        if plotallstamps:
+        if doplotallstamps:
             nplots = int(np.ceil((len(optflux + 1) / 10.)))
             fig, ax = plt.subplots(10, nplots, figsize = (10. * (nplots / 10.), 10.))
             for iplot in range(nplots):
@@ -325,10 +345,11 @@ class stamppairlist(object):
         self.psfproj = psfproj
         self.psf = psf
 
-        showpsf = True
-        if showpsf:
+        if doplotpsfs:
             fig, ax = plt.subplots(ncols = 2, figsize = (10, 5))
+            ax[0].set_title("psf ref. (convref %s)" % self.convref)
             ax[0].imshow(psfref, interpolation = 'nearest')
+            ax[1].set_title("psf sci. (convref %s)" % self.convref)
             ax[1].imshow(psfproj, interpolation = 'nearest')
             ax[0].axhline((self.npsf - 1) / 2.)
             ax[1].axhline((self.npsf - 1) / 2.)
@@ -339,7 +360,13 @@ class stamppairlist(object):
         return True
 
     # do PCA over stars used for psf training
-    def doPCA(self):
+    def doPCA(self, **kwargs):
+
+        # whether to plot PCA
+        if "plotPCA" in kwargs.keys():
+            doplotPCA = kwargs["plotPCA"]
+        else:
+            doplotPCA = False
 
         # select stars
         snrs = []
@@ -368,7 +395,6 @@ class stamppairlist(object):
             sys.exit(40)
 
         # plot PCA
-        doplotPCA = False
         if doplotPCA:
             print("   Plotting PCA eigenvectors")
             # plot eigenvalues
@@ -419,8 +445,23 @@ class stamppairlist(object):
 
 
     # train the kernel
-    def trainkernel(self, kconv):
+    def trainkernel(self, kconv, **kwargs):
 
-        for pair in self.pairs:
+        if "plotpsfs" in kwargs.keys():
+            doplotpsfs = kwargs["plotpsfs"]
+        else:
+            doplotpsfs = False
+            
+        # solution for different sets of stars
+        sol = kconv.solve(self.npsf, self.pairs, self.convref)
 
-            print(pair.stampproj.flux)
+        # plot solution
+        if doplotpsfs:
+            fig, ax = plt.subplots(ncols = 3, figsize = (20, 7))
+            ax[0].set_title("psf ref. (convref %s)" % self.convref)
+            ax[0].imshow(self.psfref, interpolation = 'nearest')
+            ax[1].set_title("psf sci. (convref %s)" % self.convref)
+            ax[1].imshow(self.psfproj, interpolation = 'nearest')
+            ax[2].set_title("Kernel model")
+            ax[2].imshow(sol, interpolation = 'nearest')
+            plt.show()

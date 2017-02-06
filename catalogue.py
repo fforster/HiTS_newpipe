@@ -74,12 +74,15 @@ class catalogue(object):
         
         RADECmagcat = kwargs["RADECmagcat"]
         solveWCS = True
+        solveZP = True
         doplot = False
         outdir = '.'
         outname = 'test'
         verbose = False
         if "solveWCS" in kwargs.keys():
             solveWCS = kwargs["solveWCS"]
+        if "solveZP" in kwargs.keys():
+            solveZP = kwargs["solveZP"]
         if "doplot" in kwargs.keys():
             doplot = kwargs["doplot"]
         if "outdir" in kwargs.keys():
@@ -89,7 +92,7 @@ class catalogue(object):
         if "verbose" in kwargs.keys():
             verbose = kwargs["verbose"]
         
-        print "Matching sets of stars to RA DEC catalogue, checking catalogue requirements"
+        print "   Matching sets of stars to RA DEC catalogue, checking catalogue requirements"
         if self.xunit != 'pix' or self.yunit != 'pix' or RADECmagcat.xlabel != 'RA' or RADECmagcat.ylabel != 'DEC' or RADECmagcat.zunit != 'mag':# or not self.hasattr("CRPIXguess") or not self.hasattr("CRVALguess") or not self.hasattr("CDguess") or not self.hasattr("PV"):
             print "Inconsistent attributes to do coordinate matching"
             return False
@@ -101,9 +104,9 @@ class catalogue(object):
     
         # sort celestial catalogue stars by flux
         idxsorted = np.argsort(RADECmagcat.z)
-        RADECmagcat.z = RADECmagcat.z[idxsorted]
         RADECmagcat.x = RADECmagcat.x[idxsorted]
         RADECmagcat.y = RADECmagcat.y[idxsorted]
+        RADECmagcat.z = RADECmagcat.z[idxsorted]
 
         # sort pixel catalogue by flux
         idxsorted = np.argsort(self.z)[::-1]
@@ -133,8 +136,15 @@ class catalogue(object):
         maskRADECcatdist = (distmin > 100. * 0.27 / 60. / 60.)
         RADECmagcat.sidx = RADECmagcat.indices[maskRADECcat][:nstarsRADEC]
 
+        # REMOVE
+        fig, ax = plt.subplots()
+        ax.scatter(RADECmagcat.x[maskRADECcat], RADECmagcat.y[maskRADECcat], c = 'b', alpha = 0.5, marker = '.')
+        ax.scatter(RA, DEC, c = 'r', alpha = 0.5, marker = 'o', s = 50)
+        plt.show()
+
         # plot both
         if doplot:
+            print("Plotting...")
             try:
                 fig, ax = plt.subplots()
                 ax.scatter(RA, DEC, alpha = 0.6, marker = 'd', c = pixcatdistmin[maskpixcatdist], lw = 0, s = 50)
@@ -229,6 +239,19 @@ class catalogue(object):
                 ax.set_xlabel("Delta RA [arcsec]")
                 ax.set_ylabel("Delta DEC [arcsec]")
                 plt.savefig("%s/%s_WCS_delta.png" % (outdir, outname))
+
+        # solve ZP
+        if solveZP:
+
+            if doplot:
+            
+                fig, ax = plt.subplots()
+                print "sum:", np.shape(RADECmagcat.sidx)
+                print RADECmagcat.z[RADECmagcat.sidx]
+                ax.scatter(RADECmagcat.z[RADECmagcat.sidx], RADECmagcat.z[RADECmagcat.sidx])
+                plt.savefig("%s/%s_ZP.png" % (outdir, outname))
+            print "Testing"
+            
 
     # select N brightest objects well inside the image edges and that are not in crowded regions
     def select(self, x, y, z, tolx, toly, xmax, xmin, ymax, ymin, error, N):

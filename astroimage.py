@@ -109,20 +109,54 @@ class HiTSimage(object):
             DEC = np.array(GAIA['dec'])
             g = np.array(GAIA['phot_g_mean_mag'])
             name = np.array(GAIA['source_id'])
-            self.RADECmagcat = catalogue(x = RA, y = DEC, z = g, xlabel = "RA", ylabel = "DEC", zlabel = "g mag", xunit = "hr", yunit = "deg", zunit = "mag")
+            self.RADECmagGAIA = catalogue(x = RA, y = DEC, z = g, xlabel = "RA", ylabel = "DEC", zlabel = "g mag", xunit = "hr", yunit = "deg", zunit = "mag")
+
         else:
             print("WARNING: cannot find GAIA file %s" % self.GAIAfile)
 
+    # load PanSTARRS catalogue for photometric calibration
+    def loadPanSTARRS(self):
+
+        if self.conf.verbose:
+            print("Loading PanSTARRS catalogue file")
+        # GAIA file
+        self.PanSTARRSfile = "%s/%s/%s/CALIBRATIONS/PS1_%s_%s.vot" % (self.conf.sharedir, self.field, self.CCD, self.field, self.CCD)
+
+        if os.path.exists(self.PanSTARRSfile):
+            PS1 = Table.read(self.PanSTARRSfile, format = 'votable')
+            RA = np.array(PS1['raMean']) / 15.
+            DEC = np.array(PS1['decMean'])
+            g = np.array(PS1['gMeanKronMag'])
+            name = np.array(PS1['objID'])
+            self.RADECmagPanSTARRS = catalogue(x = RA, y = DEC, z = g, xlabel = "RA", ylabel = "DEC", zlabel = "g mag", xunit = "hr", yunit = "deg", zunit = "mag")
+        else:
+            print("WARNING: cannot find PanSTARRS file %s" % self.GAIAfile)
+
+            
     # solve WCS given sextractor and USNO catalogue
     def solveWCS(self):
         
-        if not hasattr(self, "pixcat") or not hasattr(self, "RADECmagcat"):
-            print("WARNING: image must have attributes pixcat and RADECmagcat")
+        if not hasattr(self, "pixcat") or not hasattr(self, "RADECmagGAIA"):
+            print("WARNING: image must have attributes pixcat and RADECmagGAIA")
         else:
-            self.pixcat.matchRADEC(RADECmagcat = self.RADECmagcat, solveWCS = True)
+            self.pixcat.matchRADEC(RADECmagcat = self.RADECmagGAIA, solveWCS = True, solveZP = False, doplot = False)
 
         # save WCS
         self.WCS = self.pixcat.WCSsol.WCS
+
+
+    # solve WCS given sextractor and USNO catalogue
+    def solveZP(self):
+
+        
+        if not hasattr(self, "pixcat") or not hasattr(self, "RADECmagPanSTARRS"):
+            print("WARNING: image must have attributes pixcat and RADECmagPanSTARRS")
+        else:
+            self.pixcat.matchRADEC(RADECmagcat = self.RADECmagPanSTARRS, solveWCS = True, solveZP = True, doplot = True)
+
+        ## save WCS
+        #self.ZP = self.pixcat.WCSsol.ZP
+
 
     # load the main data components
     def loadfits(self):
@@ -318,10 +352,14 @@ class HiTSimage(object):
             stars.plotstats()
 
         # get psf
-        stars.computepsf()
+        if not stars.computepsf(plotfluxratio = False, plotallstamps = False, plotpsfs = False):
+            print("WARNING: cannot compute psf")
+            sys.exit()
         
         # do star PCA
-        stars.doPCA()
+        if not stars.doPCA(plotPCA = False):
+            print("WARNING: cannot perform PCA over training stars")
+            sys.exit()
 
         # return stars
         return stars
@@ -336,16 +374,20 @@ class HiTSimage(object):
         if self.conf.verbose:
             print("Convolving image...")
 
-        # create kernel
+        # create kernel model
         kconv = kernel(conf, nvar)
 
         # find common sources for kernel building which have no bad pixels
         stars = self.findisolatedsources(image2, npsf = npsf, nf = kconv.nf)
 
         # train kernel based on trainkernel stars
-        stars.trainkernel(kconv)
+        stars.trainkernel(kconv, plotpsfs = True)
+
+        # apply convolution kernel to image
         
-        return    
+        
+
+        return True
 
         
 if __name__ == "__main__":
@@ -367,14 +409,20 @@ if __name__ == "__main__":
     imageref.loadsextractor()
     imageref.loadGAIA()
     imageref.solveWCS()
+    imageref.loadPanSTARRS()
+    imageref.solveZP()
     imageref.loadfits()
+    sys.exit()
 
+    
     #  load HiTS science and solve WCS
     print("\nScience")
     imagesci = HiTSimage(conf, field, CCD, epochsci)
     imagesci.loadsextractor()
     imagesci.loadGAIA()
     imagesci.solveWCS()
+    imagesci.loadPanSTARRS()
+    imagesci.solveZP()
     imagesci.loadfits()
     #imagesci.updateWCS()
 
