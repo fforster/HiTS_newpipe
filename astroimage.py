@@ -5,13 +5,15 @@ import numpy as np
 import pyfits as fits
 import os
 from astropy.table import Table
+from collections import defaultdict
 
 from catalogue import *
 from stamp import *
 from kernel import *
 
-#from projection import projection
-#projection.set_num_threads(4)
+from projection import projection
+projection.set_num_threads(4)
+
 
 class HiTSconfig(object):
     
@@ -34,7 +36,30 @@ class HiTSconfig(object):
             self.verbose = kwargs["verbose"]
         else:
             self.verbose = False
-        
+
+        # open CCD numbers file
+        self.CCDn = {}
+        self.CCDs = {}
+        (CCDstring, CCDnumber) = np.loadtxt("%s/CCDnumbers.dat" % self.etcdir, dtype = str).transpose()
+        CCDnumber = np.array(CCDnumber, dtype = int)
+        for s, n in zip(CCDstring, CCDnumber):
+            self.CCDn[s] = n
+            self.CCDs[n] = s
+
+        # open zero point files (note that we use defaultdict)
+        self.ZP = {}
+        for filtername in ['g', 'r', 'i', 'z', 'Y']:
+            self.ZP[filtername] = defaultdict(dict)
+            (ID, a, e_a, b, e_b, k, e_k, gr0) = np.loadtxt("%s/psmFitDES-mean-%s.csv" % (self.etcdir, filtername), dtype = str, delimiter = ',', usecols = (4, 6, 7, 8, 9, 10, 11, 19)).transpose()
+            for IDi, ai, e_ai, bi, e_bi, ki, e_ki, gr0i in zip(ID, a, e_a, b, e_b, k, e_k, gr0):
+                self.ZP[filtername][self.CCDs[int(IDi)]]["a"] = float(ai)
+                self.ZP[filtername][self.CCDs[int(IDi)]]["e_a"] = float(e_ai)
+                self.ZP[filtername][self.CCDs[int(IDi)]]["b"] = float(bi)
+                self.ZP[filtername][self.CCDs[int(IDi)]]["e_b"] = float(e_bi)
+                self.ZP[filtername][self.CCDs[int(IDi)]]["k"] = float(ki)
+                self.ZP[filtername][self.CCDs[int(IDi)]]["e_k"] = float(e_ki)
+                self.ZP[filtername][self.CCDs[int(IDi)]]["gr0"] = float(gr0i)
+
 class HiTSimage(object):
     
     def __init__(self, HiTSconf, field, CCD, epoch):
@@ -70,9 +95,11 @@ class HiTSimage(object):
         # create sextractor catalogue
         if self.conf.verbose:
             print("Creating sextractor catalogue")
+
         self.sexfile = "%s/%s/%s/%s_%s_%02i_image.fits-catalogue_wtmap_backsize%i.dat" % (self.conf.sharedir, self.field, self.CCD, self.field, self.CCD, self.epoch, self.conf.backsize)
+
         if not os.path.exists(self.sexfile):
-            
+
             if self.conf.verbose:
                 sexverbose = "FULL"
             else:
@@ -92,8 +119,13 @@ class HiTSimage(object):
         if self.conf.verbose:
             print("Loading sextractor catalogue")
         (x, y, z, e_z, r, flag) = np.loadtxt(self.sexfile, usecols = (1, 2, 5, 6, 8, 9)).transpose()
-        self.pixcat = catalogue(x = x, y = y, z = z, e_z = e_z, r = r, flag = flag, xlabel = "ipix", ylabel = "jpix", zlabel = "flux", rlabel = "radius", xunit = "pix", yunit = "pix", zunit = "ADU", runit = "pix")
+        self.pixcat = catalogue(catname = "sextractor", x = x, y = y, z = z, e_z = e_z, r = r, flag = flag, xlabel = "ipix", ylabel = "jpix", zlabel = "flux", rlabel = "radius", xunit = "pix", yunit = "pix", zunit = "ADU", runit = "pix")
+
+        # read file header and use WCS as initial guess, also get exposure time, airmass, filtername, MJD
         self.pixcat.readheader(self.imagefile)
+
+        # get zero point
+        self.pixcat.getZP(self.conf, self.CCD)
 
     # load GAIA catalogue for astrometry (PANSTARRS in the future for photometric calibrations)
     def loadGAIA(self):
@@ -109,12 +141,12 @@ class HiTSimage(object):
             DEC = np.array(GAIA['dec'])
             g = np.array(GAIA['phot_g_mean_mag'])
             name = np.array(GAIA['source_id'])
-            self.RADECmagGAIA = catalogue(x = RA, y = DEC, z = g, xlabel = "RA", ylabel = "DEC", zlabel = "g mag", xunit = "hr", yunit = "deg", zunit = "mag")
+            self.RADECmagGAIA = catalogue(catname = "GAIA", x = RA, y = DEC, z = g, xlabel = "RA", ylabel = "DEC", zlabel = "g mag", xunit = "hr", yunit = "deg", zunit = "mag")
 
         else:
             print("WARNING: cannot find GAIA file %s" % self.GAIAfile)
 
-    # load PanSTARRS catalogue for photometric calibration
+    # load PanSTARRS catalogue for photometric calibration (requires having loaded sextractor catalogue)
     def loadPanSTARRS(self):
 
         if self.conf.verbose:
@@ -123,12 +155,17 @@ class HiTSimage(object):
         self.PanSTARRSfile = "%s/%s/%s/CALIBRATIONS/PS1_%s_%s.vot" % (self.conf.sharedir, self.field, self.CCD, self.field, self.CCD)
 
         if os.path.exists(self.PanSTARRSfile):
+            filterprefix = self.pixcat.filtername[0]
             PS1 = Table.read(self.PanSTARRSfile, format = 'votable')
-            RA = np.array(PS1['raMean']) / 15.
-            DEC = np.array(PS1['decMean'])
-            g = np.array(PS1['gMeanKronMag'])
+            x = np.array(PS1['raMean']) / 15.
+            y = np.array(PS1['decMean'])
+            z = np.array(PS1['%sMeanKronMag' % filterprefix])
+            e_z = np.array(PS1['%sMeanKronMagErr' % filterprefix])
+            gr = PS1['gMeanKronMag'] - PS1['rMeanKronMag']
+            e_gr = np.sqrt(np.array(PS1['gMeanKronMagErr'])**2 + np.array(PS1['rMeanKronMagErr'])**2)
+            flag = PS1['qualityFlag']
             name = np.array(PS1['objID'])
-            self.RADECmagPanSTARRS = catalogue(x = RA, y = DEC, z = g, xlabel = "RA", ylabel = "DEC", zlabel = "g mag", xunit = "hr", yunit = "deg", zunit = "mag")
+            self.RADECmagPanSTARRS = catalogue(catname = "PanSTARRS", x = x, y = y, z = z, e_z = e_z, gr = gr, e_gr = e_gr, flag = flag, xlabel = "RA", ylabel = "DEC", zlabel = "%s mag" % filterprefix, xunit = "hr", yunit = "deg", zunit = "mag")
         else:
             print("WARNING: cannot find PanSTARRS file %s" % self.GAIAfile)
 
@@ -139,27 +176,27 @@ class HiTSimage(object):
         if not hasattr(self, "pixcat") or not hasattr(self, "RADECmagGAIA"):
             print("WARNING: image must have attributes pixcat and RADECmagGAIA")
         else:
-            self.pixcat.matchRADEC(RADECmagcat = self.RADECmagGAIA, solveWCS = True, solveZP = False, doplot = False)
+            self.pixcat.matchRADEC(RADECmagcat = self.RADECmagGAIA, solveWCS = True, solveZP = False, doplot = True, outdir = "plots", outname = "%s_%s_%02i" % (self.field, self.CCD, self.epoch))
 
         # save WCS
         self.WCS = self.pixcat.WCSsol.WCS
 
 
     # solve WCS given sextractor and USNO catalogue
-    def solveZP(self):
+    def solveZP(self, **kwargs):
 
+        exptime = 1.
+        if "exptime" in kwargs.keys():
+            exptime = float(kwargs["exptime"])
         
         if not hasattr(self, "pixcat") or not hasattr(self, "RADECmagPanSTARRS"):
             print("WARNING: image must have attributes pixcat and RADECmagPanSTARRS")
         else:
-            self.pixcat.matchRADEC(RADECmagcat = self.RADECmagPanSTARRS, solveWCS = True, solveZP = True, doplot = True)
-
-        ## save WCS
-        #self.ZP = self.pixcat.WCSsol.ZP
+            self.pixcat.matchRADEC(RADECmagcat = self.RADECmagPanSTARRS, solveWCS = True, solveZP = True, doplot = True, docolor = False, outdir = "plots", outname = "%s_%s_%02i" % (self.field, self.CCD, self.epoch))
 
 
     # load the main data components
-    def loadfits(self):
+    def loadpixdata(self):
         
         if self.conf.verbose:
             print("Loading fits files")
@@ -248,7 +285,9 @@ class HiTSimage(object):
         print(self.projectedfile)
         if not os.path.exists(self.projectedfile):
 
-            #projection.lanczos(alanczos, nx, ny, order, sol_astrometry, self.flux.transpose(), self.var.transpose(), self.dq.transpose(), self.bg.transpose())
+            # project file
+            projection.lanczos(alanczos, nx, ny, order, sol_astrometry, self.flux.transpose(), self.var.transpose(), self.dq.transpose(), self.bg.transpose())
+            
             # get projected image and variance
             self.fluxproj = projection.imageout[0:nx, 0:ny]
             self.varproj = projection.varimageout[0:nx, 0:ny]
@@ -394,6 +433,8 @@ if __name__ == "__main__":
 
     # HiTS configuration
     namedir = "/home/fforster/Work/HiTS_newpipe/SNHiTS15J"
+    #namedir = "/home/fforster/Work/HiTS_newpipe/TESTDATA"
+    #namedir = "/home/fforster/Work/HiTS_newpipe/Jorge"
     datadir = "%s/DATA" % namedir
     conf = HiTSconfig(refdir = datadir, indir = datadir, outdir = datadir, sharedir = "%s/SHARED" % namedir, webdir = "%s/WEB" % namedir, etcdir = "/home/fforster/Work/HiTS/etc", verbose = True, backsize = 256)
 
@@ -401,8 +442,19 @@ if __name__ == "__main__":
     field = "Blind15A_25"
     CCD = "S14"
     epochref = 2
-    epochsci = 3
+    epochsci = 30
 
+    #field = "Blind15A_01"
+    #CCD = "N1"
+    #epochref = 2
+    #epochsci = 3
+
+    #filters = []
+    #MJDs = []
+    #ZP = []
+    #e_ZP = []
+    #eb_ZP = []
+    
     # load HiTS reference and solve WCS
     print("\nReference")
     imageref = HiTSimage(conf, field, CCD, epochref)
@@ -411,20 +463,41 @@ if __name__ == "__main__":
     imageref.solveWCS()
     imageref.loadPanSTARRS()
     imageref.solveZP()
-    imageref.loadfits()
-    sys.exit()
+    imageref.loadpixdata()
 
+    #sys.exit()
+    #filters.append(imageref.pixcat.filtername[0])
+    #MJDs.append(imageref.pixcat.MJD)
+    #ZP.append(imageref.pixcat.ZP)
+    #e_ZP.append(imageref.pixcat.e_ZP)
+    #eb_ZP.append(imageref.pixcat.eb_ZP)
+    #sys.exit()
     
     #  load HiTS science and solve WCS
     print("\nScience")
+    #for epochsci in np.arange(1, 36):
+
+    #if epochsci == epochref:
+    #    continue
+    
     imagesci = HiTSimage(conf, field, CCD, epochsci)
     imagesci.loadsextractor()
     imagesci.loadGAIA()
     imagesci.solveWCS()
     imagesci.loadPanSTARRS()
     imagesci.solveZP()
-    imagesci.loadfits()
+    imagesci.loadpixdata()
+
     #imagesci.updateWCS()
+    
+    #filters.append(imagesci.pixcat.filtername[0])
+    #MJDs.append(imagesci.pixcat.MJD)
+    #ZP.append(imagesci.pixcat.ZP)
+    #e_ZP.append(imagesci.pixcat.e_ZP)
+    #eb_ZP.append(imagesci.pixcat.eb_ZP)
+    #print(filters, MJDs, ZP, e_ZP, eb_ZP)
+    
+    #sys.exit()
 
     # project image
     print("\nProjection")

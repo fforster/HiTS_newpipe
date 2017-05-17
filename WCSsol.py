@@ -151,15 +151,23 @@ class WCSsol(object):
     
         x0 = np.array([self.WCS.CRPIX1, self.WCS.CRPIX2, self.WCS.CRVAL1, self.WCS.CRVAL2, self.WCS.CD11 / self.CDscale, self.WCS.CD12 / self.CDscale, self.WCS.CD21 / self.CDscale, self.WCS.CD22 / self.CDscale])
         print "   Running minimization routine..."
-        gcsol = minimize(self.chi2par, x0, method = 'L-BFGS-B', jac = self.chi2jac)#, options = {'disp': True})
+        gcsol = minimize(self.chi2par, x0, method = 'L-BFGS-B', jac = self.chi2jac)#, options = {'ftol': 1e-15, 'gtol': 1e-15, 'factr': 1e2, 'eps': 1e-10, 'disp': True})
         if gcsol.success:
             print "   Using new WCS solution (chi2: %e)" % gcsol.fun
+
+            # store values in current solution
             (self.WCS.CRPIX1, self.WCS.CRPIX2, self.WCS.CRVAL1, self.WCS.CRVAL2,
              self.WCS.CD11, self.WCS.CD12, self.WCS.CD21, self.WCS.CD22) = gcsol.x
             self.WCS.CD11 = self.WCS.CD11 * self.CDscale
             self.WCS.CD12 = self.WCS.CD12 * self.CDscale
             self.WCS.CD21 = self.WCS.CD21 * self.CDscale
             self.WCS.CD22 = self.WCS.CD22 * self.CDscale
+
+            # change best guess parameters of reference catalogue
+            self.WCS.ijcat.CRPIXguess = np.array([self.WCS.CRPIX1, self.WCS.CRPIX2])
+            self.WCS.ijcat.CRVALguess = np.array([self.WCS.CRVAL1, self.WCS.CRVAL2])
+            self.WCS.ijcat.CDguess = np.array([[self.WCS.CD11, self.WCS.CD12], [self.WCS.CD21, self.WCS.CD22]])
+                        
         else:
             print "FAILURE"
             print gcsol

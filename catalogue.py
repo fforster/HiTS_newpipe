@@ -13,6 +13,7 @@ class catalogue(object):
 
     def __init__(self, **kwargs):
         
+        self.catname = kwargs["catname"]
         self.x = np.array(kwargs["x"], dtype = float)
         self.y = np.array(kwargs["y"], dtype = float)
         self.z = np.array(kwargs["z"], dtype = float)
@@ -30,6 +31,12 @@ class catalogue(object):
             self.runit = kwargs["runit"]
         if "flag" in kwargs.keys():
             self.flag = kwargs["flag"]
+        if "gr" in kwargs.keys():
+            self.gr = kwargs["gr"]
+        if "e_gr" in kwargs.keys():
+            self.e_gr = kwargs["e_gr"]
+        if "ZP" in kwargs.keys():
+            self.ZP = kwargs["ZP"]
         if "CRPIXguess" in kwargs.keys():
             self.CRPIXguess = kwargs["CRPIXguess"]
         if "CRVALguess" in kwargs.keys():
@@ -68,14 +75,30 @@ class catalogue(object):
             self.CRVALguess = CRVAL
             self.CDguess = CD
             self.PV = PV
-    
 
+            # get exposure time, airmass and band
+            self.exptime = float(header["EXPTIME"]) #sec
+            self.filtername = header["FILTER"]
+            self.airmass = float(header["AIRMASS"])
+            self.MJD = float(header["MJD-OBS"])
+
+            # print basic stats
+            print("Filtername: %s, exposure time: %f sec, airmass: %f" % (self.filtername, self.exptime, self.airmass))
+
+
+    # get zero points
+    def getZP(self, conf, CCD):
+
+        self.ZP = conf.ZP[self.filtername[0]][CCD]
+
+    # match coordinates
     def matchRADEC(self, **kwargs):
         
         RADECmagcat = kwargs["RADECmagcat"]
         solveWCS = True
         solveZP = True
         doplot = False
+        docolor = False
         outdir = '.'
         outname = 'test'
         verbose = False
@@ -83,6 +106,8 @@ class catalogue(object):
             solveWCS = kwargs["solveWCS"]
         if "solveZP" in kwargs.keys():
             solveZP = kwargs["solveZP"]
+        if "docolor" in kwargs.keys():
+            docolor = kwargs["docolor"]
         if "doplot" in kwargs.keys():
             doplot = kwargs["doplot"]
         if "outdir" in kwargs.keys():
@@ -91,32 +116,37 @@ class catalogue(object):
             outname = kwargs["outname"]
         if "verbose" in kwargs.keys():
             verbose = kwargs["verbose"]
-        
+
+        # check pixel to celestial coordinates transformation
         print "   Matching sets of stars to RA DEC catalogue, checking catalogue requirements"
-        if self.xunit != 'pix' or self.yunit != 'pix' or RADECmagcat.xlabel != 'RA' or RADECmagcat.ylabel != 'DEC' or RADECmagcat.zunit != 'mag':# or not self.hasattr("CRPIXguess") or not self.hasattr("CRVALguess") or not self.hasattr("CDguess") or not self.hasattr("PV"):
-            print "Inconsistent attributes to do coordinate matching"
+        if self.xunit != 'pix' or self.yunit != 'pix' or RADECmagcat.xlabel != 'RA' or RADECmagcat.ylabel != 'DEC' or RADECmagcat.zunit != 'mag':
+            print "WARNING: Inconsistent attributes to do coordinate matching: (pix, pix) -> (RA, DEC) required."
             return False
 
-        # transform RA to degrees
+        # transform RA to degrees if in hours
         if RADECmagcat.xunit == 'hr':
             RADECmagcat.x = RADECmagcat.x * 15.
             RADECmagcat.xunit = 'deg'
     
-        # sort celestial catalogue stars by flux
+        # sort celestial catalogue stars by flux (move to catalogue routine?)
         idxsorted = np.argsort(RADECmagcat.z)
-        RADECmagcat.x = RADECmagcat.x[idxsorted]
-        RADECmagcat.y = RADECmagcat.y[idxsorted]
-        RADECmagcat.z = RADECmagcat.z[idxsorted]
+        for var in dir(RADECmagcat):
+            attr = getattr(RADECmagcat, var)
+            if hasattr(attr, "__len__") and not isinstance(attr, str) and not isinstance(attr, dict):
+                if var.startswith("__") or var.startswith("CD") or var.startswith("CRPIX") or var.startswith("CRVAL") or var.startswith("PV") or var.startswith("indices") or var.startswith("sidx"):
+                    continue
+                setattr(RADECmagcat, var, attr[idxsorted])
 
-        # sort pixel catalogue by flux
+        # sort pixel catalogue by flux (move to catalogue routine?)
         idxsorted = np.argsort(self.z)[::-1]
-        self.x = self.x[idxsorted]
-        self.y = self.y[idxsorted]
-        self.z = self.z[idxsorted]
-        self.r = self.r[idxsorted]
-        self.flag = self.flag[idxsorted]
+        for var in dir(self):
+            attr = getattr(self, var)
+            if hasattr(attr, "__len__") and not isinstance(attr, str) and not isinstance(attr, dict):
+                if var.startswith("__") or var.startswith("CD") or var.startswith("CRPIX") or var.startswith("CRVAL") or var.startswith("PV") or var.startswith("indices") or var.startswith("sidx"):
+                    continue
+                setattr(self, var, attr[idxsorted])
 
-        # select brightest isolated stars from sextractor catalogue and store mask
+        # select brightest isolated stars from sextractor catalogue and store mask (move to catalogue routine?)
         npix = 100
         nstars = 60
         maskpixcat = (self.flag == 0) & (self.r < np.percentile(self.r, 90)) & (self.z > np.percentile(self.z, 90))
@@ -125,30 +155,26 @@ class catalogue(object):
         maskpixcatdist = (pixcatdistmin > npix)
         self.sidx = self.indices[maskpixcat][:nstarspix][maskpixcatdist]
 
-        # create WCS object and evaluate RA and DEC
+        # create temporary WCS object and evaluate RA and DEC with best guess
         sol = WCS(self, self.CRPIXguess, self.CRVALguess, self.CDguess, self.PV)
         (RA, DEC) = (sol.RA(), sol.DEC())
 
-        # select brightest isolated stars from celestial catalogue and store indices
+        # select brightest isolated stars from celestial catalogue and store indices (move to catalogue routine?)
         maskRADECcat = (RADECmagcat.x > min(RA)) & (RADECmagcat.x < max(RA)) & (RADECmagcat.y > min(DEC)) & (RADECmagcat.y < max(DEC))
+        if RADECmagcat.zunit == "mag": # remove very negative magnitudes
+            maskRADECcat = maskRADECcat & (RADECmagcat.z > -99)
         nstarsRADEC = min(np.sum(maskRADECcat), nstars)
         distmin = np.array(map(lambda i, j: np.min(np.sqrt((RADECmagcat.x[maskRADECcat][:nstarsRADEC][(RADECmagcat.x[maskRADECcat][:nstarsRADEC] != i) & (RADECmagcat.y[maskRADECcat][:nstarsRADEC] != j)] - i)**2 + (RADECmagcat.y[maskRADECcat][:nstarsRADEC][(RADECmagcat.x[maskRADECcat][:nstarsRADEC] != i) & (RADECmagcat.y[maskRADECcat][:nstarsRADEC] != j)] - j)**2)), RADECmagcat.x[maskRADECcat][:nstarsRADEC], RADECmagcat.y[maskRADECcat][:nstarsRADEC]))
         maskRADECcatdist = (distmin > 100. * 0.27 / 60. / 60.)
         RADECmagcat.sidx = RADECmagcat.indices[maskRADECcat][:nstarsRADEC]
 
-        # REMOVE
-        fig, ax = plt.subplots()
-        ax.scatter(RADECmagcat.x[maskRADECcat], RADECmagcat.y[maskRADECcat], c = 'b', alpha = 0.5, marker = '.')
-        ax.scatter(RA, DEC, c = 'r', alpha = 0.5, marker = 'o', s = 50)
-        plt.show()
-
         # plot both
         if doplot:
-            print("Plotting...")
             try:
                 fig, ax = plt.subplots()
-                ax.scatter(RA, DEC, alpha = 0.6, marker = 'd', c = pixcatdistmin[maskpixcatdist], lw = 0, s = 50)
-                ax.scatter(RADECmagcat.x[maskRADECcat][:nstarsRADEC][maskRADECcatdist], RADECmagcat.y[maskRADECcat][:nstarsRADEC][maskRADECcatdist], alpha = 0.6, s = 100, c = distmin[maskRADECcatdist])
+                ax.scatter(RA, DEC, alpha = 0.6, marker = 'd', c = pixcatdistmin[maskpixcatdist], lw = 0, s = 50, label = self.catname)
+                ax.scatter(RADECmagcat.x[maskRADECcat][:nstarsRADEC][maskRADECcatdist], RADECmagcat.y[maskRADECcat][:nstarsRADEC][maskRADECcatdist], alpha = 0.6, s = 100, c = distmin[maskRADECcatdist], label = RADECmagcat.catname)
+                ax.legend(loc = 1, fontsize = 8)
                 ax.set_xlim(min(RA), max(RA))
                 ax.set_ylim(min(DEC), max(DEC))
                 ax.set_title("Bright, isolated stars")
@@ -189,8 +215,8 @@ class catalogue(object):
         # plot corrected positions
         if doplot:
             fig, ax = plt.subplots()
-            ax.scatter(RA + dRA, DEC + dDEC)
-            ax.scatter(RADECmagcat.x[maskRADECcat][:nstarsRADEC], RADECmagcat.y[maskRADECcat][:nstarsRADEC], alpha = 0.6, s = 100, c = 'r')
+            ax.scatter(RA + dRA, DEC + dDEC, label = "offset %s" % self.catname)
+            ax.scatter(RADECmagcat.x[maskRADECcat][:nstarsRADEC], RADECmagcat.y[maskRADECcat][:nstarsRADEC], alpha = 0.6, s = 100, c = 'r', label = RADECmagcat.catname)
             ax.set_xlabel("RA [deg]")
             ax.set_ylabel("DEC [deg]")
             ax.set_title("Star positions after offset")
@@ -202,10 +228,9 @@ class catalogue(object):
         maskdist = (distmatch < 5. * 0.27 / 60. / 60.)
         ipixcatmatch = self.x[maskpixcat][:nstarspix][idxmatch][maskdist]
         jpixcatmatch = self.y[maskpixcat][:nstarspix][idxmatch][maskdist]
-        self.sidx = self.indices[maskpixcat][:nstarspix][idxmatch][maskdist]
 
-        RAmatch = RADECmagcat.x[maskRADECcat][:nstarsRADEC][maskdist]
-        DECmatch = RADECmagcat.y[maskRADECcat][:nstarsRADEC][maskdist]
+        # store indices
+        self.sidx = self.indices[maskpixcat][:nstarspix][idxmatch][maskdist]
         RADECmagcat.sidx = RADECmagcat.indices[maskRADECcat][:nstarsRADEC][maskdist]
 
         # create final WCSsol
@@ -230,28 +255,116 @@ class catalogue(object):
             self.WCSsol = WCSsol(RADECmagcat, WCS(self, self.CRPIXguess, self.CRVALguess, self.CDguess, self.PV))
             self.WCSsol.solve()
 
+            # recompute WCS and zero point using more stars
+            # find all stars that are within the maximum distance so far to another star
+            dist = np.sqrt((self.WCSsol.WCS.RA() - RADECmagcat.x[RADECmagcat.sidx])**2 + (self.WCSsol.WCS.DEC() - RADECmagcat.y[RADECmagcat.sidx])**2)
+            maxdist = max(dist) * 3600. # arcsec
+
+            # reset star selection
+            self.sidx = np.array(range(len(self.x)), dtype = int)
+            RADECmagcat.sidx = np.array(range(len(RADECmagcat.x)), dtype = int)
+
+            # compute distances from one catalogue to the next
+            RA = self.WCSsol.WCS.RA()
+            DEC = self.WCSsol.WCS.DEC()
+            dist = 3600. * np.array(map(lambda x, y: min(np.sqrt((RA - x)**2 + (DEC - y)**2)), RADECmagcat.x, RADECmagcat.y))
+            maskdist = (dist <= maxdist)
+
+            # find matching indices
+            self.sidx = np.array(map(lambda x, y: np.argmin(np.sqrt((RA - x)**2 + (DEC - y)**2)), RADECmagcat.x[maskdist], RADECmagcat.y[maskdist]))
+            RADECmagcat.sidx = np.array(range(len(RADECmagcat.x)))[maskdist]
+
+        # solve ZP
+        if solveZP:
+
+            # compute ZP differences
+            ZP = self.ZP['a'] + self.ZP['k'] * self.airmass
+            pixmag = -2.5 * np.log10(self.z[self.sidx]) + 2.5 * np.log10(self.exptime) - ZP
+            e_pixmag = -2.5 / np.log(10.) * self.e_z[self.sidx] / self.z[self.sidx]
+            if docolor and hasattr(RADECmagcat, "gr"):
+                pixmag = pixmag - self.ZP['b'] * (RADECmagcat.gr[RADECmagcat.sidx] - self.ZP['gr0'])
+            else:
+                docolor = False
+            catmag = RADECmagcat.z[RADECmagcat.sidx]
+            diff = pixmag - catmag
+            if hasattr(RADECmagcat, "e_z"):
+                e_catmag = RADECmagcat.e_z[RADECmagcat.sidx]
+                e_diff = np.sqrt(e_pixmag**2 + e_catmag**2)
+            else:
+                e_diff = e_pixmag
+   
+            # MAD masking
+            magmin = 15
+            if self.filtername[0] == 'g':
+                magmax = 20.5
+            elif self.filtername[0] == 'r':
+                magmax = 20.5
+            elif self.filtername[0] == 'i':
+                magmax = 20.5
+            med = np.median(diff[np.isfinite(diff) & (catmag >= magmin) & (catmag <= magmax)])
+            mad = np.median(np.abs(diff[np.isfinite(diff) & (catmag >= magmin) & (catmag <= magmax)] - med))
+            # mask magnitudes
+            maskmag = np.isfinite(diff) & (np.nan_to_num(diff) > med - 3. * mad) & (np.nan_to_num(diff) < med + 3. * mad) & (catmag >= magmin) & (catmag <= magmax)
+            if hasattr(RADECmagcat, "e_z"):
+                maskmag = np.array(maskmag & (np.abs(e_catmag) <= 0.3) & (np.abs(e_pixmag) <= 0.3))
+            if docolor:
+                maskmag = np.array(maskmag & (np.abs(RADECmagcat.gr[RADECmagcat.sidx] - self.ZP['gr0']) < 10))
+
+            # compute zero point
+            self.ZP = np.median(diff[maskmag])
+            self.e_ZP = np.std(diff[maskmag])
+
+            # estimate ZP error
+            ZPs = []
+            for i in range(100):
+                ZPs.append(np.median(np.random.choice(diff[maskmag], size = len(diff[maskmag]))))
+            self.eb_ZP = np.std(ZPs)
+
+            # save new indices
+            RADECmagcat.sidx = RADECmagcat.sidx[maskmag]
+            self.sidx = self.sidx[maskmag]
+
+            # plot ZPs
             if doplot:
             
+                fig, ax = plt.subplots(ncols = 2, sharey = True, figsize = (18, 6))
+                
+                ax[0].scatter(self.z[self.sidx], diff[maskmag])
+                ax[0].errorbar(self.z[self.sidx], diff[maskmag], yerr = e_diff[maskmag], lw = 0, elinewidth = 1)
+
+                ax[1].axhline(self.ZP, c = 'gray')
+                ax[1].axhline(self.ZP + self.e_ZP, c = 'gray', ls = ':')
+                ax[1].axhline(self.ZP - self.e_ZP, c = 'gray', ls = ':')
+                ax[1].axhline(self.ZP + self.eb_ZP, c = 'gray', ls = '--')
+                ax[1].axhline(self.ZP - self.eb_ZP, c = 'gray', ls = '--')
+
+                ax[1].scatter(catmag[maskmag], diff[maskmag], c = 'r', label = "ZP: %f +- %f/%f (%i stars)" % (self.ZP, self.e_ZP, self.eb_ZP, len(diff[maskmag])))
+                ax[1].legend(fontsize = 8)
+                ax[0].set_xlabel("Flux [ADU]")
+                ax[0].set_xscale('log')
+                ax[1].set_xlabel("%s (%s)" % (RADECmagcat.zlabel, RADECmagcat.catname))
+                plt.savefig("%s/%s_ZP.png" % (outdir, outname))
+
+        # recompute WCS solution after previous extra cuts
+        if solveWCS:
+
+            self.WCSsol = WCSsol(RADECmagcat, WCS(self, self.CRPIXguess, self.CRVALguess, self.CDguess, self.PV))
+            self.WCSsol.solve()
+            
+            if doplot:
+
                 fig, ax = plt.subplots()
-                ax.scatter(3600. * (self.WCSsol.WCS.RA() - RADECmagcat.x[RADECmagcat.sidx]), 3600. * (self.WCSsol.WCS.DEC() - RADECmagcat.y[RADECmagcat.sidx]))
+                if docolor:
+                    cax = ax.scatter(3600. * (self.WCSsol.WCS.RA() - RADECmagcat.x[RADECmagcat.sidx]), 3600. * (self.WCSsol.WCS.DEC() - RADECmagcat.y[RADECmagcat.sidx]), c = RADECmagcat.gr[RADECmagcat.sidx])
+                    cbar = fig.colorbar(cax)
+                else:
+                    ax.scatter(3600. * (self.WCSsol.WCS.RA() - RADECmagcat.x[RADECmagcat.sidx]), 3600. * (self.WCSsol.WCS.DEC() - RADECmagcat.y[RADECmagcat.sidx]))
                 ax.axvline(0)
                 ax.axhline(0)
                 ax.set_xlabel("Delta RA [arcsec]")
                 ax.set_ylabel("Delta DEC [arcsec]")
                 plt.savefig("%s/%s_WCS_delta.png" % (outdir, outname))
 
-        # solve ZP
-        if solveZP:
-
-            if doplot:
-            
-                fig, ax = plt.subplots()
-                print "sum:", np.shape(RADECmagcat.sidx)
-                print RADECmagcat.z[RADECmagcat.sidx]
-                ax.scatter(RADECmagcat.z[RADECmagcat.sidx], RADECmagcat.z[RADECmagcat.sidx])
-                plt.savefig("%s/%s_ZP.png" % (outdir, outname))
-            print "Testing"
-            
 
     # select N brightest objects well inside the image edges and that are not in crowded regions
     def select(self, x, y, z, tolx, toly, xmax, xmin, ymax, ymin, error, N):
@@ -729,14 +842,14 @@ if __name__ == "__main__":
 
     # load sextractor catalogue and get file header before trying to match
     (x, y, z, e_z, r, flag) = np.loadtxt("%s/%s_%s_%02i_image_crblaster.fits-catalogue_wtmap_backsize64.dat" % (catdir, field, CCD, epoch), usecols = (1, 2, 5, 6, 8, 9)).transpose()
-    pixcat = catalogue(x = x, y = y, z = z, e_z = e_z, r = r, flag = flag, xlabel = "ipix", ylabel = "jpix", zlabel = "flux", rlabel = "radius", xunit = "pix", yunit = "pix", zunit = "ADU", runit = "pix")
+    pixcat = catalogue(catname = "sextractor", x = x, y = y, z = z, e_z = e_z, r = r, flag = flag, xlabel = "ipix", ylabel = "jpix", zlabel = "flux", rlabel = "radius", xunit = "pix", yunit = "pix", zunit = "ADU", runit = "pix")
     pixcat.readheader("../SNHiTS15J/%s_%s_%02i_image.fits" % (field, CCD, epoch))
     
     # load USNO data and create catalogue
     fileUSNO = "%s/USNO_%s_%s_%02i.npy" % (catdir, field, CCD, 2)
     if os.path.exists(fileUSNO):
         (x, y, name, B, R) = np.load(fileUSNO)
-        RADECmagcat = catalogue(x = x, y = y, z = B, xlabel = "RA", ylabel = "DEC", zlabel = "B mag", xunit = "hr", yunit = "deg", zunit = "mag")
+        RADECmagcat = catalogue(catname = "USNO", x = x, y = y, z = B, xlabel = "RA", ylabel = "DEC", zlabel = "B mag", xunit = "hr", yunit = "deg", zunit = "mag")
         
         # match both catalogues
         pixcat.matchRADEC(RADECmagcat = RADECmagcat, solveWCS = True, doplot = True, outdir = "astrometry_test", outname = "test")
@@ -757,7 +870,7 @@ if __name__ == "__main__":
         if not os.path.exists(fileepoch):
             continue
         (x, y, z, e_z, r, flag) = np.loadtxt(fileepoch, usecols = (1, 2, 5, 6, 8, 9)).transpose()
-        pixcat2 = catalogue(x = x, y = y, z = z, e_z = e_z, r = r, flag = flag, xlabel = "ipix", ylabel = "jpix", zlabel = "flux", rlabel = "radius", xunit = "pix", yunit = "pix", zunit = "ADU", runit = "pix")
+        pixcat2 = catalogue(catname = "sextractor", x = x, y = y, z = z, e_z = e_z, r = r, flag = flag, xlabel = "ipix", ylabel = "jpix", zlabel = "flux", rlabel = "radius", xunit = "pix", yunit = "pix", zunit = "ADU", runit = "pix")
         pixcat2.readheader("../SNHiTS15J/%s_%s_%02i_image.fits" % (field, CCD, epoch))
         
         # do relative pixel solution

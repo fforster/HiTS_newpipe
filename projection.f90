@@ -119,7 +119,7 @@ contains
                    ! image interpolation
                    imageout(i, j) = imageout(i, j) + imagein(xf + k, yf + l) / 100. * LxlLyl
 
-                   ! variance interpolation (note that we don't do proper error propagation, which maked the variance strongly spatially varying
+                   ! variance interpolation (note that we don't do proper error propagation
                    varimageout(i, j) = varimageout(i, j) + varimagein(xf + k, yf + l) * LxlLyl !* LxlLyl
 
                    ! background interpolation
